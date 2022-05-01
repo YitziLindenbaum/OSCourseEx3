@@ -3,28 +3,29 @@
 #include <pthread.h>
 #include <atomic>
 
-std::atomic<uint64_t> atomic_counter(0);
 
 struct {
     IntermediateVec intermediateVec;
     OutputVec outputVec;
+    std::atomic<uint64_t>* atomic_counter;
 } typedef ThreadContext;
 
 struct StarterPack {
     const MapReduceClient& client;
     const InputVec& inputVec;
     ThreadContext& t_context;
+    std::atomic<uint64_t>* atomic_counter;
 } typedef StarterPack;
 
 void* entry_point_map(void* placeholder) {
-    //
+
 
     StarterPack *starter_pack = static_cast<StarterPack*>(placeholder);
     int num_pairs =  starter_pack->inputVec.size();
 
-    for (; atomic_counter < num_pairs; ++atomic_counter) {
-        K1* key = starter_pack->inputVec[atomic_counter].first;
-        V1* value = starter_pack->inputVec[atomic_counter].second;
+    for (; *(starter_pack->atomic_counter) < num_pairs; ++(*(starter_pack->atomic_counter))) {
+        K1* key = starter_pack->inputVec.at(*(starter_pack->atomic_counter)).first;
+        V1* value = starter_pack->inputVec.at(*(starter_pack->atomic_counter)).second;
         starter_pack->client.map(key, value, &(starter_pack->t_context));
     }
 }
@@ -34,10 +35,12 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
                             int multiThreadLevel) {
     pthread_t* threads = new pthread_t[multiThreadLevel];
     ThreadContext* t_contexts = new ThreadContext[multiThreadLevel];
+    std::atomic<uint64_t>* atomic_counter = new std::atomic<uint64_t>(0);
 
     for (int i = 0; i < multiThreadLevel; ++i) {
         IntermediateVec intermediateVec;
-        StarterPack starterPack = {client, inputVec, t_contexts[i]};
+        t_contexts[i].atomic_counter = atomic_counter;
+        StarterPack starterPack = {client, inputVec, t_contexts[i], atomic_counter};
         pthread_create(threads + i, NULL, entry_point_map, &starterPack);
     }
 
