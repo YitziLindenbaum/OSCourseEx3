@@ -3,7 +3,7 @@
 #include <pthread.h>
 #include <atomic>
 
-std::atomic<int> atomic_counter(0);
+std::atomic<uint64_t> atomic_counter(0);
 
 struct {
     IntermediateVec intermediateVec;
