@@ -14,6 +14,7 @@ struct
     std::atomic<uint64_t> *atomic_counter;
 } typedef ThreadContext;
 
+
 struct StarterPack
 {
     const MapReduceClient &client;
@@ -22,22 +23,25 @@ struct StarterPack
     std::atomic<uint64_t> *atomic_counter;
 } typedef StarterPack;
 
+
 void *entry_point_map(void *placeholder)
 {
 
     StarterPack *starter_pack = static_cast<StarterPack *>(placeholder);
     //todo remove
-    std::cout << "starting map_entry_point for thread " << starter_pack->t_context.id << std::endl;
-    std::cout.flush();
+    //std::cout << "starting map_entry_point for thread " << starter_pack->t_context.id <<
+    // std::endl;
     //===========
 
     int num_pairs = starter_pack->inputVec.size();
 
-    for (; *(starter_pack->atomic_counter) < num_pairs; ++(*(starter_pack->atomic_counter)))
+    while (*(starter_pack->atomic_counter) < num_pairs)
     {
-        int temp = *(starter_pack->atomic_counter);
-        K1 *key = starter_pack->inputVec.at(temp).first;
-        V1 *value = starter_pack->inputVec.at(temp).second;
+
+        int old_value = *(starter_pack->atomic_counter);
+        (starter_pack->atomic_counter)->fetch_add(1);
+        K1 *key = starter_pack->inputVec.at(old_value).first;
+        V1 *value = starter_pack->inputVec.at(old_value).second;
         starter_pack->client.map(key, value, &(starter_pack->t_context));
     }
 
@@ -45,6 +49,7 @@ void *entry_point_map(void *placeholder)
     return starter_pack->atomic_counter;
     //===========
 }
+
 
 JobHandle startMapReduceJob(const MapReduceClient &client,
                             const InputVec &inputVec, OutputVec &outputVec,
@@ -57,40 +62,41 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     for (int i = 0; i < multiThreadLevel; ++i)
     {
         //TODO remove
-        std::cout << "entering loop for creating thread " << i << std::endl;
+        //std::cout << "entering loop for creating thread " << i << std::endl;
         //===========
 
         IntermediateVec intermediateVec;
         t_contexts[i].atomic_counter = atomic_counter;
         t_contexts[i].id = i;
         // try using dynamic allocation for starterPack
-        StarterPack starterPack = {client, inputVec, t_contexts[i], atomic_counter};
+        StarterPack *starterPack = new StarterPack{client, inputVec, t_contexts[i], atomic_counter};
 
-        std::cout << "creating thread " << i << std::endl;
-        pthread_create(threads + i, NULL, entry_point_map, &starterPack);
+        //std::cout << "creating thread " << i << std::endl;
+        pthread_create(threads + i, NULL, entry_point_map, starterPack);
     }
 
     for (int i = 0; i < multiThreadLevel; ++i)
     {
         pthread_join(threads[i], NULL);
     }
+
+
     //todo remove
-/*    for (int i = 0; i < multiThreadLevel; ++i)
+    for (int i = 0; i < multiThreadLevel; ++i)
     {
         std::cout << "intermediate_vec for thread " << i << " is: [ ";
         for (int j = 0; j < t_contexts[i].intermediateVec.size(); ++j)
         {
 
-            std::cout << "(" << ((const KChar*)(t_contexts[i].intermediateVec.at(i).first))->c << " : "
-                      << ((const VCount*)(t_contexts[i].intermediateVec.at(i).second))->count << ") " << ",";
+            std::cout << "(" << ((const KChar*)(t_contexts[i].intermediateVec.at(j).first))->c <<
+            " : "
+                      << ((const VCount*)(t_contexts[i].intermediateVec.at(j).second))->count <<
+                      ") " << ",";
         }
         std::cout << "]" << std::endl;
-    }*/
+    }
     //==========
-//    for (int i = 0; i < multiThreadLevel; ++i)
-//    {
-//        pthread_join(threads[i], NULL);
-//    }
+
 
     //TODO change
     return atomic_counter;
@@ -101,15 +107,16 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
 void emit2(K2 *key, V2 *value, void *context)
 { // use atomic_counter
     ThreadContext *t_context = static_cast<ThreadContext *>(context);
-    KChar *kc = static_cast<KChar *>(key);
-    VCount *vc = static_cast<VCount *>(value);
+//    KChar *kc = static_cast<KChar *>(key);
+//    VCount *vc = static_cast<VCount *>(value);
     //todo remove
-    std::cout << "starting emit2 for thread " << t_context->id << " with (" << kc->c << "," << vc->count
-              << ")" << std::endl;
+//    std::cout << "starting emit2 for thread " << t_context->id << " with (" << kc->c << "," << vc->count
+//              << ")" << std::endl;
     //===========
 
-    t_context->intermediateVec.push_back(IntermediatePair(key, value));
+      t_context->intermediateVec.push_back(IntermediatePair(key, value));
 }
+
 
 void emit3(K3 *key, V3 *value, void *context)
 {
@@ -122,10 +129,12 @@ void waitForJob(JobHandle job)
 
 }
 
+
 void getJobState(JobHandle job, JobState *state)
 {
 
 }
+
 
 void closeJobHandle(JobHandle job)
 {
@@ -139,7 +148,7 @@ int main(int argc, char **argv)
     InputVec input_vec;
     OutputVec output_vec;
     VString s1("This string is full of characters");
-    VString s2("Multithreading is awesome");
+    VString s2("Multithreading is awesome aa");
     VString s3("race conditions are bad");
     input_vec.push_back({nullptr, &s1});
     input_vec.push_back({nullptr, &s2});
@@ -150,6 +159,9 @@ int main(int argc, char **argv)
 
 
 }
+
+
+
 //int main(int argc, char** argv)
 //{
 //  CounterClient client;
