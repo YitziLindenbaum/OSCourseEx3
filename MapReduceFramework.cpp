@@ -21,10 +21,11 @@ struct StarterPack {
 } typedef StarterPack;
 
 void* entry_point_map(void* placeholder) {
-    StarterPack *starter_pack = static_cast<StarterPack*>(placeholder);
 
+    StarterPack *starter_pack = static_cast<StarterPack*>(placeholder);
     //todo remove
     std::cout << "starting map_entry_point for thread " << starter_pack->t_context.id<<std::endl;
+    //std::cout.flush();
     //===========
 
     int num_pairs =  starter_pack->inputVec.size();
@@ -56,19 +57,23 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
         t_contexts[i].atomic_counter = atomic_counter;
         t_contexts[i].id = i;
         StarterPack starterPack = {client, inputVec, t_contexts[i], atomic_counter};
+        std::cout<<"creating thread " << i << std::endl;
         pthread_create(threads + i, NULL, entry_point_map, &starterPack);
     }
 
+    for (int i = 0; i < multiThreadLevel; ++i) {
+        pthread_join(threads[i], NULL);
+    }
     //todo remove
-  for (int i = 0; i < multiThreadLevel; ++i) {
-      std::cout << "intermediate_vec for thread " << i << " is: ";
-    for (int j = 0; j < t_contexts[i].intermediateVec.size(); ++j) {
-        std::cout <<"[ " << "(" << t_contexts[i].intermediateVec.at(i).first << " : "
+    for (int i = 0; i < multiThreadLevel; ++i) {
+      std::cout << "intermediate_vec for thread " << i << " is: [ ";
+      for (int j = 0; j < t_contexts[i].intermediateVec.size(); ++j) {
+        std::cout << "(" << t_contexts[i].intermediateVec.at(i).first << " : "
         << t_contexts[i].intermediateVec.at(i).second << ") " << ",";
     }
-    std::cout << "]" << std::endl;
+      std::cout << "]" << std::endl;
   }
-  //==========
+    //==========
 
    //TODO change
   return atomic_counter;
@@ -78,9 +83,10 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
 
 void emit2 (K2* key, V2* value, void* context) { // use atomic_counter
     ThreadContext *t_context = static_cast<ThreadContext*>(context);
-
+    KChar* kc = static_cast<KChar*>(key);
+    VCount* vc = static_cast<VCount*>(value);
     //todo remove
-    std::cout<<"starting emit2 for tread " << t_context->id << " with (" << key << "," << value
+    std::cout<<"starting emit2 for thread " << t_context->id << " with (" << kc->c << "," << vc->count
     << ")" << std::endl;
     //===========
 
@@ -116,12 +122,6 @@ int main(int argc, char ** argv){
   input_vec.push_back({nullptr, &s1});
   input_vec.push_back({nullptr, &s2});
   input_vec.push_back({nullptr, &s3});
-
-  //check if the input is correct
-  for (int i = 0; i < input_vec.size(); ++i) {
-    std::cout << input_vec.at(i).first << " ; " << input_vec.at(i).second;
-  }
-  std::cout << std::endl;
 
   // starting the program
   JobHandle job = startMapReduceJob(client, input_vec, output_vec, 3);
