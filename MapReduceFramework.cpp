@@ -4,26 +4,32 @@
 #include <atomic>
 #include <iostream>
 #include <algorithm>
+#include <semaphore.h>
 #include "SampleClient.cpp"
+#include "Barrier.h"
 
-#define INC_STAGE (long long)1 << 62
+#define SET_STAGE(atomic_counter, stage) atomic_counter->store((uint64_t)stage << 62)
 #define INC_PROGRESS 1
-#define INC_TOTAL(atomic_counter, total) atomic_counter->fetch_add(total << 31)
+#define SET_TOTAL(atomic_counter, new_total) atomic_counter->store(new_total << 31)
+#define INC_TOTAL(atomic_counter, to_add) atomic_counter->fetch_add(to_add << 31)
 
 #define LOAD_STAGE(num) num >> 62
 #define LOAD_TOTAL(num) num & 0x3FFFFFFF80000000
 #define LOAD_PROGRESS(num) num & 0x7FFFFFFF
 
+sem_t sem;
+
 struct
 {
-    int id;
+    int tid;
     IntermediateVec intermediateVec;
     OutputVec outputVec;
     std::atomic<uint64_t> *atomic_counter;
+    Barrier *barrier;
 } typedef ThreadContext;
 
 
-struct StarterPack
+struct StarterPack // todo unite with ThreadContext
 {
     const MapReduceClient &client;
     const InputVec &inputVec;
@@ -35,34 +41,7 @@ bool comparePairs(IntermediatePair a, IntermediatePair b) {
     return *(a.first) < *(b.first);
 }
 
-void *entry_point_map(void *placeholder)
-{
-
-    StarterPack *starter_pack = static_cast<StarterPack *>(placeholder);
-    //todo remove
-    //std::cout << "starting map_entry_point for thread " << starter_pack->t_context.id <<
-    // std::endl;
-    //===========
-
-    int num_pairs = starter_pack->inputVec.size();
-    int old_value = LOAD_PROGRESS((starter_pack->atomic_counter)->fetch_add(INC_PROGRESS));
-    while (old_value < num_pairs)
-    {
-        K1 *key = starter_pack->inputVec.at(old_value).first;
-        V1 *value = starter_pack->inputVec.at(old_value).second;
-        starter_pack->client.map(key, value, &(starter_pack->t_context));
-        old_value = LOAD_PROGRESS((starter_pack->atomic_counter)->fetch_add(INC_PROGRESS));
-    }
-
-
-    auto vec_begin = starter_pack->t_context.intermediateVec.begin();
-    auto vec_end = starter_pack->t_context.intermediateVec.end();
-    std::sort(vec_begin, vec_end, comparePairs);
-    //TODO change
-    return starter_pack->atomic_counter;
-    //===========
-}
-
+void* entry_point(void* placeholder);
 
 JobHandle startMapReduceJob(const MapReduceClient &client,
                             const InputVec &inputVec, OutputVec &outputVec,
@@ -71,17 +50,23 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     pthread_t *threads = new pthread_t[multiThreadLevel];
     ThreadContext *t_contexts = new ThreadContext[multiThreadLevel];
     std::atomic<uint64_t> *atomic_counter = new std::atomic<uint64_t>(0);
+    Barrier *barrier = new Barrier(multiThreadLevel);
+    if (sem_init(&sem, 0, 1) < 0) {
+        //todo print error message
+        exit(1);
+    }
     INC_TOTAL(atomic_counter, inputVec.size());
-    atomic_counter->fetch_add(INC_STAGE);
-    for (int i = 0; i < multiThreadLevel; ++i)
+    SET_STAGE(atomic_counter, MAP_STAGE);
+    for (int i = 0; i < multiThreadLevel; ++i) // todo export to function
     {
         IntermediateVec intermediateVec;
         t_contexts[i].atomic_counter = atomic_counter;
-        t_contexts[i].id = i;
+        t_contexts[i].tid = i;
+        t_contexts[i].barrier = barrier;
 
         StarterPack *starterPack = new StarterPack{client, inputVec, t_contexts[i], atomic_counter};
 
-        pthread_create(threads + i, NULL, entry_point_map, starterPack);
+        pthread_create(threads + i, NULL, entry_point, starterPack);
     }
 
     for (int i = 0; i < multiThreadLevel; ++i)
@@ -111,6 +96,47 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     return atomic_counter;
     //=========
 }
+
+void *entry_point(void *placeholder)
+{
+
+    StarterPack *starter_pack = static_cast<StarterPack *>(placeholder);
+
+    // ================ MAP STAGE ================
+
+    int num_pairs = starter_pack->inputVec.size();
+    int old_value = LOAD_PROGRESS((starter_pack->atomic_counter)->fetch_add(INC_PROGRESS));
+    while (old_value < num_pairs)
+    {
+        K1 *key = starter_pack->inputVec.at(old_value).first;
+        V1 *value = starter_pack->inputVec.at(old_value).second;
+        starter_pack->client.map(key, value, &(starter_pack->t_context));
+        old_value = LOAD_PROGRESS((starter_pack->atomic_counter)->fetch_add(INC_PROGRESS));
+    }
+
+
+    auto vec_begin = starter_pack->t_context.intermediateVec.begin();
+    auto vec_end = starter_pack->t_context.intermediateVec.end();
+    std::sort(vec_begin, vec_end, comparePairs);
+
+    starter_pack->t_context.barrier->barrier();
+
+    // ================ SHUFFLE STAGE ================
+
+    if (starter_pack->t_context.tid == 0) {
+        starter_pack->atomic_counter->store(0);
+        SET_STAGE(starter_pack->atomic_counter, SHUFFLE_STAGE);
+        // do shuffle
+    }
+
+    starter_pack->t_context.barrier->barrier();
+
+
+    //TODO change
+    return starter_pack->atomic_counter;
+    //===========
+}
+
 
 
 void emit2(K2 *key, V2 *value, void *context)
@@ -151,7 +177,7 @@ int main(int argc, char **argv)
     OutputVec output_vec;
     VString s1("This string is full of characters");
     VString s2("Multithreading is awesome aa");
-    VString s3("race conditions are bad");
+    VString s3("Race conditions are bad");
     input_vec.push_back({nullptr, &s1});
     input_vec.push_back({nullptr, &s2});
     input_vec.push_back({nullptr, &s3});

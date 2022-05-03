@@ -73,7 +73,7 @@ public:
 //	OutputVec outputVec;
 //	VString s1("This string is full of characters");
 //	VString s2("Multithreading is awesome");
-//	VString s3("race conditions are bad");
+//	VString s3("Race conditions are bad");
 //	inputVec.push_back({nullptr, &s1});
 //	inputVec.push_back({nullptr, &s2});
 //	inputVec.push_back({nullptr, &s3});

@@ -1,4 +1,4 @@
-#include "Barrier.h"
+#include "../../Barrier.h"
 #include <pthread.h>
 #include <cstdio>
 
