@@ -3,8 +3,16 @@
 #include <pthread.h>
 #include <atomic>
 #include <iostream>
+#include <algorithm>
 #include "SampleClient.cpp"
 
+#define INC_STAGE (long long)1 << 62
+#define INC_PROGRESS 1
+#define INC_TOTAL(atomic_counter, total) atomic_counter->fetch_add(total << 31)
+
+#define LOAD_STAGE(num) num >> 62
+#define LOAD_TOTAL(num) num & 0x3FFFFFFF80000000
+#define LOAD_PROGRESS(num) num & 0x7FFFFFFF
 
 struct
 {
@@ -23,6 +31,9 @@ struct StarterPack
     std::atomic<uint64_t> *atomic_counter;
 } typedef StarterPack;
 
+bool comparePairs(IntermediatePair a, IntermediatePair b) {
+    return *(a.first) < *(b.first);
+}
 
 void *entry_point_map(void *placeholder)
 {
@@ -34,17 +45,19 @@ void *entry_point_map(void *placeholder)
     //===========
 
     int num_pairs = starter_pack->inputVec.size();
-
-    while (*(starter_pack->atomic_counter) < num_pairs)
+    int old_value = LOAD_PROGRESS((starter_pack->atomic_counter)->fetch_add(INC_PROGRESS));
+    while (old_value < num_pairs)
     {
-
-        int old_value = *(starter_pack->atomic_counter);
-        (starter_pack->atomic_counter)->fetch_add(1);
         K1 *key = starter_pack->inputVec.at(old_value).first;
         V1 *value = starter_pack->inputVec.at(old_value).second;
         starter_pack->client.map(key, value, &(starter_pack->t_context));
+        old_value = LOAD_PROGRESS((starter_pack->atomic_counter)->fetch_add(INC_PROGRESS));
     }
 
+
+    auto vec_begin = starter_pack->t_context.intermediateVec.begin();
+    auto vec_end = starter_pack->t_context.intermediateVec.end();
+    std::sort(vec_begin, vec_end, comparePairs);
     //TODO change
     return starter_pack->atomic_counter;
     //===========
@@ -58,20 +71,16 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     pthread_t *threads = new pthread_t[multiThreadLevel];
     ThreadContext *t_contexts = new ThreadContext[multiThreadLevel];
     std::atomic<uint64_t> *atomic_counter = new std::atomic<uint64_t>(0);
-
+    INC_TOTAL(atomic_counter, inputVec.size());
+    atomic_counter->fetch_add(INC_STAGE);
     for (int i = 0; i < multiThreadLevel; ++i)
     {
-        //TODO remove
-        //std::cout << "entering loop for creating thread " << i << std::endl;
-        //===========
-
         IntermediateVec intermediateVec;
         t_contexts[i].atomic_counter = atomic_counter;
         t_contexts[i].id = i;
-        // try using dynamic allocation for starterPack
+
         StarterPack *starterPack = new StarterPack{client, inputVec, t_contexts[i], atomic_counter};
 
-        //std::cout << "creating thread " << i << std::endl;
         pthread_create(threads + i, NULL, entry_point_map, starterPack);
     }
 
@@ -84,14 +93,14 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     //todo remove
     for (int i = 0; i < multiThreadLevel; ++i)
     {
-        std::cout << "intermediate_vec for thread " << i << " is: [ ";
+        std::cout << "intermediate_vec for thread " << i << " is: \n [ ";
         for (int j = 0; j < t_contexts[i].intermediateVec.size(); ++j)
         {
 
-            std::cout << "(" << ((const KChar*)(t_contexts[i].intermediateVec.at(j).first))->c <<
-            " : "
-                      << ((const VCount*)(t_contexts[i].intermediateVec.at(j).second))->count <<
-                      ") " << ",";
+            std::cout << "(" << ((const KChar *) (t_contexts[i].intermediateVec.at(j).first))->c <<
+                      " : "
+                      << ((const VCount *) (t_contexts[i].intermediateVec.at(j).second))->count <<
+                      ") " << "," << std::endl;
         }
         std::cout << "]" << std::endl;
     }
@@ -107,14 +116,7 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
 void emit2(K2 *key, V2 *value, void *context)
 { // use atomic_counter
     ThreadContext *t_context = static_cast<ThreadContext *>(context);
-//    KChar *kc = static_cast<KChar *>(key);
-//    VCount *vc = static_cast<VCount *>(value);
-    //todo remove
-//    std::cout << "starting emit2 for thread " << t_context->id << " with (" << kc->c << "," << vc->count
-//              << ")" << std::endl;
-    //===========
-
-      t_context->intermediateVec.push_back(IntermediatePair(key, value));
+    t_context->intermediateVec.push_back(IntermediatePair(key, value));
 }
 
 
@@ -155,7 +157,7 @@ int main(int argc, char **argv)
     input_vec.push_back({nullptr, &s3});
 
     // starting the program
-    JobHandle job = startMapReduceJob(client, input_vec, output_vec, 3);
+    JobHandle job = startMapReduceJob(client, input_vec, output_vec, 2);
 
 
 }
