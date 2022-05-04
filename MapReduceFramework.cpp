@@ -160,7 +160,6 @@ void *entry_point(void *placeholder)
         for (int i = 0; i < num_threads; ++i) {
 
             INC_TOTAL(atomic_counter, all_contexts[i].intermediateVec.size());
-            printf("atomic counter after increment %d: %llu\n", i, LOAD_TOTAL(atomic_counter->load()));
             if (!(all_contexts[i].intermediateVec.empty()))
             {
                 shuffleSet.insert(all_contexts[i].intermediateVec.back());
@@ -185,7 +184,7 @@ void *entry_point(void *placeholder)
             }
             queue->push_back(*keyVec);
         }
-        for (const auto &keyVec : *queue) {
+/*        for (const auto &keyVec : *queue) {
             std::cout << "new vector" << std::endl;
             std::cout << "[b" ;
             for (const auto &item : keyVec)
@@ -196,7 +195,7 @@ void *entry_point(void *placeholder)
                           ")" << ",";
             }
             std::cout << "]" << std::endl;
-        }
+        }*/
         printf("final total: %llu\n", LOAD_TOTAL(atomic_counter->load()));
         printf("progress: %llu\n", LOAD_PROGRESS(atomic_counter->load()));
     }
