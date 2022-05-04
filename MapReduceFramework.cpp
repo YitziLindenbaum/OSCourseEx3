@@ -12,11 +12,11 @@
 
 #define SET_STAGE(atomic_counter, stage) atomic_counter->store((uint64_t)stage << 62)
 #define INC_PROGRESS(atomic_counter) atomic_counter->fetch_add(1)
-#define SET_TOTAL(atomic_counter, new_total) atomic_counter->store(new_total << 31)
-#define INC_TOTAL(atomic_counter, to_add) atomic_counter->fetch_add(to_add << 31)
+#define SET_TOTAL(atomic_counter, new_total) atomic_counter->store((uint64_t)new_total << 31)
+#define INC_TOTAL(atomic_counter, to_add) atomic_counter->fetch_add((uint64_t)to_add << 31)
 
 #define LOAD_STAGE(num) num >> 62
-#define LOAD_TOTAL(num) (num & 0x3FFFFFFF80000000)
+#define LOAD_TOTAL(num) ((num >> 31) & 0x7FFFFFFF)
 #define LOAD_PROGRESS(num) num & 0x7FFFFFFF
 
 //sem_t sem;
@@ -149,20 +149,18 @@ void *entry_point(void *placeholder)
     if (t_context->tid == 0) {
         auto atomic_counter = t_context->atomic_counter;
         atomic_counter->store(0);
-        //SET_STAGE(atomic_counter, SHUFFLE_STAGE);
+        SET_STAGE(atomic_counter, SHUFFLE_STAGE);
         // do shuffle
 
         std::vector<IntermediateVec> *queue = t_context->shuffledQueue;
         std::set<IntermediatePair, IntPairComparator> shuffleSet;
         ThreadContext* all_contexts = t_context->threadTracker->all_contexts;
         int num_threads = t_context->threadTracker->num_threads;
-        printf("atomic counter before increments: %llx\n",atomic_counter->load());
 
         for (int i = 0; i < num_threads; ++i) {
 
-            //INC_TOTAL(atomic_counter, all_contexts[i].intermediateVec.size());
-            INC_TOTAL(atomic_counter, 1);
-            printf("atomic counter after increment %d: %llu\n", i, (atomic_counter->load()));
+            INC_TOTAL(atomic_counter, all_contexts[i].intermediateVec.size());
+            printf("atomic counter after increment %d: %llu\n", i, LOAD_TOTAL(atomic_counter->load()));
             if (!(all_contexts[i].intermediateVec.empty()))
             {
                 shuffleSet.insert(all_contexts[i].intermediateVec.back());
