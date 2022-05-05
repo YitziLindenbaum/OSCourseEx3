@@ -33,7 +33,7 @@ struct ThreadContext
     OutputVec outputVec;
     std::atomic<uint64_t> *atomic_counter;
     Barrier *barrier;
-    std::vector<IntermediateVec> *shuffledQueue;
+    std::vector<IntermediateVec> *shuffleQueue;
     ThreadTracker *threadTracker; // will be NULL for all threads other than 0
 } typedef ThreadContext;
 
@@ -59,6 +59,17 @@ public:
 
 void* entry_point(void* placeholder);
 
+void threadMap(ThreadContext *t_context);
+
+IntermediatePair popFromSet(std::set<IntermediatePair, IntPairComparator> &shuffleSet);
+
+void initShuffle(std::atomic<uint64_t> *atomic_counter, std::set<IntermediatePair, IntPairComparator> &shuffleSet,
+                 const ThreadContext *all_contexts, int num_threads);
+
+void threadShuffle(std::vector<IntermediateVec> *shuffleQueue, std::atomic<uint64_t> *atomic_counter,
+                   std::set<IntermediatePair, IntPairComparator> &shuffleSet, ThreadContext *all_contexts,
+                   int num_threads);
+
 JobHandle startMapReduceJob(const MapReduceClient &client,
                             const InputVec &inputVec, OutputVec &outputVec,
                             int multiThreadLevel)
@@ -82,7 +93,7 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
         t_contexts[i].inputVec = &inputVec;
         t_contexts[i].atomic_counter = atomic_counter;
         t_contexts[i].barrier = barrier;
-        t_contexts[i].shuffledQueue = shuffledQueue;
+        t_contexts[i].shuffleQueue = shuffledQueue;
 
         // Give thread 0 access to all threads
         if (i == 0) {
@@ -128,22 +139,17 @@ void *entry_point(void *placeholder)
 
     // ================ MAP STAGE ================
 
-    int num_pairs = t_context->inputVec->size();
-    int old_value = LOAD_PROGRESS((t_context->atomic_counter)->fetch_add(1));
-    while (old_value < num_pairs)
-    {
-        K1 *key = t_context->inputVec->at(old_value).first;
-        V1 *value = t_context->inputVec->at(old_value).second;
-        t_context->client->map(key, value, t_context);
-        old_value = LOAD_PROGRESS((t_context->atomic_counter)->fetch_add(1));
-    }
+    threadMap(t_context);
 
+
+    //            ======= SORT =======
 
     auto vec_begin = t_context->intermediateVec.begin();
     auto vec_end = t_context->intermediateVec.end();
     std::sort(vec_begin, vec_end, comparePairs);
 
     t_context->barrier->barrier();
+
 
     // ================ SHUFFLE STAGE ================
     if (t_context->tid == 0) {
@@ -152,41 +158,16 @@ void *entry_point(void *placeholder)
         SET_STAGE(atomic_counter, SHUFFLE_STAGE);
         // do shuffle
 
-        std::vector<IntermediateVec> *queue = t_context->shuffledQueue;
         std::set<IntermediatePair, IntPairComparator> shuffleSet;
         ThreadContext* all_contexts = t_context->threadTracker->all_contexts;
         int num_threads = t_context->threadTracker->num_threads;
+        // Place "greatest" pairs in each thread's vector in ordered set
+        initShuffle(atomic_counter, shuffleSet, all_contexts, num_threads);
 
-        for (int i = 0; i < num_threads; ++i) {
-
-            INC_TOTAL(atomic_counter, all_contexts[i].intermediateVec.size());
-            if (!(all_contexts[i].intermediateVec.empty()))
-            {
-                shuffleSet.insert(all_contexts[i].intermediateVec.back());
-            }
-        }
-        while (!shuffleSet.empty()) {
-            //todo extract next four lines to function
-            auto it = shuffleSet.end();
-            it--;
-            IntermediatePair to_place = *it;
-            shuffleSet.erase(it);
-            IntermediateVec *keyVec = new IntermediateVec();
-            for (int i = 0; i < num_threads; ++i) {
-                IntermediateVec &curVec = all_contexts[i].intermediateVec;
-                while (!(curVec.empty()) && equalPairs(to_place, curVec.back()))
-                {
-                    keyVec->push_back(curVec.back());
-                    curVec.pop_back();
-                    INC_PROGRESS(atomic_counter);
-                }
-                if (!curVec.empty()) {shuffleSet.insert(curVec.back());}
-            }
-            queue->push_back(*keyVec);
-        }
-/*        for (const auto &keyVec : *queue) {
+        threadShuffle(t_context->shuffleQueue, atomic_counter, shuffleSet, all_contexts, num_threads);
+        for (const auto &keyVec : *(t_context->shuffleQueue)) {
             std::cout << "new vector" << std::endl;
-            std::cout << "[b" ;
+            std::cout << "[" ;
             for (const auto &item : keyVec)
             {
                 std::cout << " (" << ((const KChar*)(item.first))->c <<
@@ -195,7 +176,8 @@ void *entry_point(void *placeholder)
                           ")" << ",";
             }
             std::cout << "]" << std::endl;
-        }*/
+        }
+        // todo remove
         printf("final total: %llu\n", LOAD_TOTAL(atomic_counter->load()));
         printf("progress: %llu\n", LOAD_PROGRESS(atomic_counter->load()));
     }
@@ -208,6 +190,62 @@ void *entry_point(void *placeholder)
     //===========
 }
 
+void threadShuffle(std::vector<IntermediateVec> *shuffleQueue, std::atomic<uint64_t> *atomic_counter,
+                   std::set<IntermediatePair, IntPairComparator> &shuffleSet, ThreadContext *all_contexts,
+                   int num_threads)
+{
+    while (!shuffleSet.empty()) {
+        IntermediatePair toPlace = popFromSet(shuffleSet);
+
+        IntermediateVec *keyVec = new IntermediateVec();
+        for (int i = 0; i < num_threads; ++i) {
+            IntermediateVec &curVec = all_contexts[i].intermediateVec;
+            while (!(curVec.empty()) && equalPairs(toPlace, curVec.back()))
+            {
+                keyVec->push_back(curVec.back());
+                curVec.pop_back();
+                INC_PROGRESS(atomic_counter);
+            }
+            if (!curVec.empty()) {shuffleSet.insert(curVec.back());}
+        }
+        shuffleQueue->push_back(*keyVec);
+    }
+}
+
+void initShuffle(std::atomic<uint64_t> *atomic_counter, std::set<IntermediatePair, IntPairComparator> &shuffleSet,
+                 const ThreadContext *all_contexts, int num_threads)
+{
+    for (int i = 0; i < num_threads; ++i) {
+
+        INC_TOTAL(atomic_counter, all_contexts[i].intermediateVec.size());
+        if (!(all_contexts[i].intermediateVec.empty()))
+        {
+            shuffleSet.insert(all_contexts[i].intermediateVec.back());
+        }
+    }
+}
+
+IntermediatePair popFromSet(std::set<IntermediatePair, IntPairComparator> &shuffleSet)
+{
+    auto it = shuffleSet.end();
+    it--;
+    IntermediatePair to_place = *it;
+    shuffleSet.erase(it);
+    return to_place;
+}
+
+void threadMap(ThreadContext *t_context)
+{
+    int num_pairs = t_context->inputVec->size();
+    int old_value = LOAD_PROGRESS((t_context->atomic_counter)->fetch_add(1));
+    while (old_value < num_pairs)
+    {
+        K1 *key = t_context->inputVec->at(old_value).first;
+        V1 *value = t_context->inputVec->at(old_value).second;
+        t_context->client->map(key, value, t_context);
+        old_value = LOAD_PROGRESS((t_context->atomic_counter)->fetch_add(1));
+    }
+}
 
 
 void emit2(K2 *key, V2 *value, void *context)
