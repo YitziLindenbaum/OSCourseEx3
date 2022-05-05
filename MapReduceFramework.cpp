@@ -12,8 +12,8 @@
 
 // =================== MACROS ======================
 #define SET_STAGE(atomic_counter, stage) atomic_counter->store((uint64_t)stage << 62)
-#define INC_PROGRESS(atomic_counter) atomic_counter->fetch_add(1)
-#define SET_TOTAL(atomic_counter, new_total) atomic_counter->store((uint64_t)new_total << 31)
+#define INC_PROGRESS(atomic_counter, to_add) atomic_counter->fetch_add(to_add)
+#define RESET_PROGRESS(atomic_counter) atomic_counter->store((uint64_t)new_total << 31)
 #define INC_TOTAL(atomic_counter, to_add) atomic_counter->fetch_add((uint64_t)to_add << 31)
 
 #define LOAD_STAGE(num) num >> 62
@@ -89,7 +89,7 @@ void threadShuffle(ThreadContext *t_context, std::set<IntermediatePair, IntPairC
             {
                 keyVec->push_back(curVec.back());
                 curVec.pop_back();
-                INC_PROGRESS(atomic_counter);
+                INC_PROGRESS(atomic_counter, 1);
             }
             if (!curVec.empty()) {shuffleSet.insert(curVec.back());}
         }
@@ -137,12 +137,14 @@ void threadMap(ThreadContext *t_context)
 void threadReduce(ThreadContext *t_context) {
     auto shuffleQueue = t_context->shuffleQueue;
     while (true) {
+        printf("current progress: %llu\n", LOAD_PROGRESS(t_context->atomic_counter->load()));
         pthread_mutex_lock(t_context->mutexes + QUEUE_MUTEX);
         if (shuffleQueue->empty()) {
             pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX);
             break;
         }
         t_context->client->reduce(&(shuffleQueue->back()), t_context);
+        INC_PROGRESS(t_context->atomic_counter, shuffleQueue->back().size());
         t_context->shuffleQueue->pop_back();
         pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX);
     }
@@ -222,6 +224,9 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     }
     std::cout << "]" << std::endl;
 
+    printf("total: %llu\n", LOAD_TOTAL(atomic_counter->load()));
+    printf("final progress: %llu\n", LOAD_PROGRESS(atomic_counter->load()));
+
     //TODO change
     return atomic_counter;
     //=========
@@ -274,15 +279,20 @@ void *entry_point(void *placeholder)
             std::cout << "]" << std::endl;
         }*/
         // todo remove
-        //printf("final total: %llu\n", LOAD_TOTAL(t_context->atomic_counter->load()));
+        //printf("total: %llu\n", LOAD_TOTAL(t_context->atomic_counter->load()));
         //printf("progress: %llu\n", LOAD_PROGRESS(t_context->atomic_counter->load()));
+
+        // Set up for Reduce stage
+        uint32_t reduceTotal = LOAD_TOTAL(t_context->atomic_counter->load());
+        t_context->atomic_counter->store(0);
+        SET_STAGE(t_context->atomic_counter, REDUCE_STAGE); //TODO check forum about when exactly to change stage
+        INC_TOTAL(t_context->atomic_counter, reduceTotal);
     }
 
     t_context->barrier->barrier();
 
     // ================ REDUCE STAGE ================
     threadReduce(t_context);
-
 
     //TODO change
     return t_context->atomic_counter;
