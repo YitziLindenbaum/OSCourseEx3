@@ -172,7 +172,7 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
 
     INC_TOTAL(atomic_counter, inputVec.size());
     SET_STAGE(atomic_counter, MAP_STAGE);
-    for (int i = 0; i < multiThreadLevel; ++i) // todo export to function
+    for (int i = 0; i < multiThreadLevel; ++i) // todo creat constructor ?(destructor)?
     {
         t_contexts[i].tid = i;
         t_contexts[i].client = &client;
@@ -186,7 +186,7 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
         // Give thread 0 access to all threads
         if (i == 0) {
             t_contexts[i].threadTracker = threadTracker;
-        }
+        } else{t_contexts[i].threadTracker = nullptr;}
 
         pthread_create(threads + i, NULL, entry_point, t_contexts + i);
     }
@@ -198,21 +198,6 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     }
 
 
-    //todo remove
-    /*for (int i = 0; i < multiThreadLevel; ++i)
-    {
-        std::cout << "intermediate_vec for thread " << i << " is: \n [ ";
-        for (int j = 0; j < t_contexts[i].intermediateVec.size(); ++j)
-        {
-
-            std::cout << "(" << ((const KChar *) (t_contexts[i].intermediateVec.at(j).first))->c <<
-                      " : "
-                      << ((const VCount *) (t_contexts[i].intermediateVec.at(j).second))->count <<
-                      ") " << "," << std::endl;
-        }
-        std::cout << "]" << std::endl;
-    }*/
-    //==========
 
     std::cout << "[" ;
     for (const auto &item : outputVec)
@@ -226,6 +211,7 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
 
     printf("total: %llu\n", LOAD_TOTAL(atomic_counter->load()));
     printf("final progress: %llu\n", LOAD_PROGRESS(atomic_counter->load()));
+
 
     //TODO change
     return atomic_counter;
@@ -243,7 +229,7 @@ void *entry_point(void *placeholder)
 
     threadMap(t_context);
 
-    //            ======= SORT =======
+    //================= SORT STAGE ===============
 
     auto vec_begin = t_context->intermediateVec.begin();
     auto vec_end = t_context->intermediateVec.end();
@@ -257,30 +243,12 @@ void *entry_point(void *placeholder)
         // set up Shuffle stage
         t_context->atomic_counter->store(0);
         SET_STAGE(t_context->atomic_counter, SHUFFLE_STAGE); //TODO check forum about when exactly to change stage
-        // do shuffle
 
         std::set<IntermediatePair, IntPairComparator> shuffleSet;
 
-        // Place "greatest" pairs in each thread's vector in ordered set
         initShuffle(t_context, shuffleSet);
 
         threadShuffle(t_context, shuffleSet);
-
-        /*for (const auto &keyVec : *(t_context->shuffleQueue)) {
-            std::cout << "new vector" << std::endl;
-            std::cout << "[" ;
-            for (const auto &item : keyVec)
-            {
-                std::cout << " (" << ((const KChar*)(item.first))->c <<
-                          " : "
-                          << ((const VCount*)(item.second))->count <<
-                          ")" << ",";
-            }
-            std::cout << "]" << std::endl;
-        }*/
-        // todo remove
-        //printf("total: %llu\n", LOAD_TOTAL(t_context->atomic_counter->load()));
-        //printf("progress: %llu\n", LOAD_PROGRESS(t_context->atomic_counter->load()));
 
         // Set up for Reduce stage
         uint32_t reduceTotal = LOAD_TOTAL(t_context->atomic_counter->load());
@@ -293,6 +261,7 @@ void *entry_point(void *placeholder)
 
     // ================ REDUCE STAGE ================
     threadReduce(t_context);
+
 
     //TODO change
     return t_context->atomic_counter;
