@@ -319,13 +319,18 @@ void waitForJob(JobHandle job)
     CHECK(pthread_mutex_unlock(mutex), MUTEX_UNLOCK_ERR);
 }
 
-
+// todo test
 void getJobState(JobHandle job, JobState *state)
 {
     JobHandleReal *realJob = static_cast<JobHandleReal*>(job);
-    state->stage = static_cast<stage_t>(LOAD_STAGE(realJob->threadTracker->all_contexts->atomic_counter));
-}
+    auto atomic_counter = realJob->threadTracker->all_contexts->atomic_counter;
 
+    state->stage = static_cast<stage_t>(LOAD_STAGE(atomic_counter));
+
+    double progress = SHIFT_PROGRESS(atomic_counter->load());
+    double total = LOAD_TOTAL(atomic_counter); // use doubles to make sure 32 bit ints don't overflow
+    state->percentage = (float)(progress / total) * 100;
+}
 
 void closeJobHandle(JobHandle job)
 {
