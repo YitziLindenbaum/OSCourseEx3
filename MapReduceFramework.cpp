@@ -16,11 +16,16 @@
 #define RESET_PROGRESS(atomic_counter) atomic_counter->store((uint64_t)new_total << 31)
 #define INC_TOTAL(atomic_counter, to_add) atomic_counter->fetch_add((uint64_t)to_add << 31)
 
-#define LOAD_STAGE(num) num >> 62
-#define LOAD_TOTAL(num) ((num >> 31) & 0x7FFFFFFF)
-#define LOAD_PROGRESS(num) num & 0x7FFFFFFF
+#define LOAD_STAGE(atomic_counter) atomic_counter->load() >> 62
+#define LOAD_TOTAL(atomic_counter) ((atomic_counter->load() >> 31) & 0x7FFFFFFF)
+#define SHIFT_PROGRESS(num) num & 0x7FFFFFFF
 
-#define CHECK(sysCall, errMsg) if (sysCall < 0) { \
+#define MUTEX_LOCK_ERR "pthread_mutex_lock"
+#define MUTEX_UNLOCK_ERR "pthread_mutex_unlock"
+#define PT_CREATE_ERR "pthread_create"
+#define PT_JOIN_ERR "pthread_join"
+
+#define CHECK(sysCall, errMsg) if (sysCall) { \
                         std::cerr << "system error: " << errMsg << std::endl; \
                         exit(1); \
                         }
@@ -34,8 +39,8 @@ struct ThreadTracker typedef ThreadTracker;
 struct ThreadContext typedef ThreadContext;
 struct JobHandleReal typedef JobHandleReal;
 class IntPairComparator;
-bool comparePairs(const IntermediatePair a, const IntermediatePair b);
-bool equalPairs(const IntermediatePair a, const IntermediatePair b);
+bool comparePairs(IntermediatePair a, IntermediatePair b);
+bool equalPairs(IntermediatePair a, IntermediatePair b);
 void* entry_point(void* placeholder);
 void threadMap(ThreadContext *t_context);
 IntermediatePair popFromSet(std::set<IntermediatePair, IntPairComparator> &shuffleSet);
@@ -96,14 +101,14 @@ IntermediatePair popFromSet(std::set<IntermediatePair, IntPairComparator> &shuff
 
 void threadMap(ThreadContext *t_context)
 {
-    int num_pairs = t_context->inputVec->size();
-    int old_value = LOAD_PROGRESS((t_context->atomic_counter)->fetch_add(1));
+    auto num_pairs = t_context->inputVec->size();
+    int old_value = SHIFT_PROGRESS((t_context->atomic_counter)->fetch_add(1));
     while (old_value < num_pairs)
     {
         K1 *key = t_context->inputVec->at(old_value).first;
         V1 *value = t_context->inputVec->at(old_value).second;
         t_context->client->map(key, value, t_context);
-        old_value = LOAD_PROGRESS((t_context->atomic_counter)->fetch_add(1));
+        old_value = SHIFT_PROGRESS((t_context->atomic_counter)->fetch_add(1));
     }
 }
 
@@ -150,16 +155,16 @@ void threadShuffle(ThreadContext *t_context, std::set<IntermediatePair, IntPairC
 void threadReduce(ThreadContext *t_context) {
     auto shuffleQueue = t_context->shuffleQueue;
     while (true) {
-        printf("current progress: %llu\n", LOAD_PROGRESS(t_context->atomic_counter->load()));
-        pthread_mutex_lock(t_context->mutexes + QUEUE_MUTEX_IND);
+        printf("current progress: %llu\n", SHIFT_PROGRESS(t_context->atomic_counter->load()));
+        CHECK(pthread_mutex_lock(t_context->mutexes + QUEUE_MUTEX_IND), MUTEX_LOCK_ERR);
         if (shuffleQueue->empty()) {
-            pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX_IND);
+            CHECK(pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX_IND), MUTEX_UNLOCK_ERR);
             break;
         }
         t_context->client->reduce(&(shuffleQueue->back()), t_context);
         INC_PROGRESS(t_context->atomic_counter, shuffleQueue->back().size());
         t_context->shuffleQueue->pop_back();
-        pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX_IND);
+        CHECK(pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX_IND), MUTEX_UNLOCK_ERR);
     }
 }
 
@@ -201,7 +206,7 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
             t_contexts[i].threadTracker = threadTracker;
         } else{t_contexts[i].threadTracker = nullptr;}
 
-        pthread_create(threads + i, NULL, entry_point, t_contexts + i);
+        CHECK(pthread_create(threads + i, NULL, entry_point, t_contexts + i), PT_CREATE_ERR);
     }
 
 
@@ -222,8 +227,8 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     }
     std::cout << "]" << std::endl;
 
-    printf("total: %llu\n", LOAD_TOTAL(atomic_counter->load()));
-    printf("final progress: %llu\n", LOAD_PROGRESS(atomic_counter->load()));
+    printf("total: %llu\n", LOAD_TOTAL(atomic_counter));
+    printf("final progress: %llu\n", SHIFT_PROGRESS(atomic_counter->load()));
 
     JobHandleReal *ret = new JobHandleReal{threads, threadTracker, false, mutexes};
     return ret;
@@ -263,7 +268,7 @@ void *entry_point(void *placeholder)
         threadShuffle(t_context, shuffleSet);
 
         // Set up for Reduce stage
-        uint32_t reduceTotal = LOAD_TOTAL(t_context->atomic_counter->load());
+        uint32_t reduceTotal = LOAD_TOTAL(t_context->atomic_counter);
         t_context->atomic_counter->store(0);
         SET_STAGE(t_context->atomic_counter, REDUCE_STAGE); //TODO check forum about when exactly to change stage
         INC_TOTAL(t_context->atomic_counter, reduceTotal);
@@ -276,7 +281,7 @@ void *entry_point(void *placeholder)
 
 
     //TODO change
-    return 0;
+    return nullptr;
     //===========
 }
 
@@ -301,23 +306,24 @@ void waitForJob(JobHandle job)
     pthread_t *threads = realJob->threads;
     pthread_mutex_t* mutex = (realJob->mutexes) + WAIT_MUTEX_IND;
 
-    pthread_mutex_lock(mutex);
+    CHECK(pthread_mutex_lock(mutex), MUTEX_LOCK_ERR);
     if (realJob->done) {
-        pthread_mutex_unlock(mutex);
+        CHECK(pthread_mutex_unlock(mutex), MUTEX_UNLOCK_ERR);
         return;
     }
     for (int i = 0; i < num_threads; ++i)
     {
-        pthread_join(threads[i], NULL);
+        CHECK(pthread_join(threads[i], NULL), PT_JOIN_ERR);
     }
     realJob->done = true;
-    pthread_mutex_unlock(mutex);
+    CHECK(pthread_mutex_unlock(mutex), MUTEX_UNLOCK_ERR);
 }
 
 
 void getJobState(JobHandle job, JobState *state)
 {
-
+    JobHandleReal *realJob = static_cast<JobHandleReal*>(job);
+    state->stage = static_cast<stage_t>(LOAD_STAGE(realJob->threadTracker->all_contexts->atomic_counter));
 }
 
 
