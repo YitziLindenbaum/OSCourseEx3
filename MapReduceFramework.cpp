@@ -20,13 +20,19 @@
 #define LOAD_TOTAL(num) ((num >> 31) & 0x7FFFFFFF)
 #define LOAD_PROGRESS(num) num & 0x7FFFFFFF
 
+#define CHECK(sysCall, errMsg) if (sysCall < 0) { \
+                        std::cerr << "system error: " << errMsg << std::endl; \
+                        exit(1); \
+                        }
+
 #define NUM_MUTEXES 2
-#define QUEUE_MUTEX 0
-#define OUTPUT_MUTEX 1
+#define QUEUE_MUTEX_IND 0
+#define WAIT_MUTEX_IND 1
 
 // ================= DECLARATIONS ====================
 struct ThreadTracker typedef ThreadTracker;
 struct ThreadContext typedef ThreadContext;
+struct JobHandleReal typedef JobHandleReal;
 class IntPairComparator;
 bool comparePairs(const IntermediatePair a, const IntermediatePair b);
 bool equalPairs(const IntermediatePair a, const IntermediatePair b);
@@ -57,6 +63,13 @@ struct ThreadTracker {
     int num_threads;
 } typedef ThreadTracker;
 
+struct JobHandleReal {
+    pthread_t *threads;
+    ThreadTracker *threadTracker;
+    bool done;
+    pthread_mutex_t* mutexes;
+};
+
 bool comparePairs(const IntermediatePair a, const IntermediatePair b) {
     return *(a.first) < *(b.first);
 }
@@ -71,6 +84,43 @@ public:
         return comparePairs(a, b);
     }
 };
+
+IntermediatePair popFromSet(std::set<IntermediatePair, IntPairComparator> &shuffleSet)
+{
+    auto it = shuffleSet.end();
+    it--;
+    IntermediatePair to_place = *it;
+    shuffleSet.erase(it);
+    return to_place;
+}
+
+void threadMap(ThreadContext *t_context)
+{
+    int num_pairs = t_context->inputVec->size();
+    int old_value = LOAD_PROGRESS((t_context->atomic_counter)->fetch_add(1));
+    while (old_value < num_pairs)
+    {
+        K1 *key = t_context->inputVec->at(old_value).first;
+        V1 *value = t_context->inputVec->at(old_value).second;
+        t_context->client->map(key, value, t_context);
+        old_value = LOAD_PROGRESS((t_context->atomic_counter)->fetch_add(1));
+    }
+}
+
+void initShuffle(ThreadContext *t_context, std::set<IntermediatePair, IntPairComparator> &shuffleSet)
+{
+    auto atomic_counter = t_context->atomic_counter;
+    const ThreadContext *all_contexts = t_context->threadTracker->all_contexts;
+    int num_threads = t_context->threadTracker->num_threads;
+    for (int i = 0; i < num_threads; ++i) {
+
+        INC_TOTAL(atomic_counter, all_contexts[i].intermediateVec.size());
+        if (!(all_contexts[i].intermediateVec.empty()))
+        {
+            shuffleSet.insert(all_contexts[i].intermediateVec.back());
+        }
+    }
+}
 
 void threadShuffle(ThreadContext *t_context, std::set<IntermediatePair, IntPairComparator> &shuffleSet)
 {
@@ -97,56 +147,19 @@ void threadShuffle(ThreadContext *t_context, std::set<IntermediatePair, IntPairC
     }
 }
 
-void initShuffle(ThreadContext *t_context, std::set<IntermediatePair, IntPairComparator> &shuffleSet)
-{
-    auto atomic_counter = t_context->atomic_counter;
-    const ThreadContext *all_contexts = t_context->threadTracker->all_contexts;
-    int num_threads = t_context->threadTracker->num_threads;
-    for (int i = 0; i < num_threads; ++i) {
-
-        INC_TOTAL(atomic_counter, all_contexts[i].intermediateVec.size());
-        if (!(all_contexts[i].intermediateVec.empty()))
-        {
-            shuffleSet.insert(all_contexts[i].intermediateVec.back());
-        }
-    }
-}
-
-IntermediatePair popFromSet(std::set<IntermediatePair, IntPairComparator> &shuffleSet)
-{
-    auto it = shuffleSet.end();
-    it--;
-    IntermediatePair to_place = *it;
-    shuffleSet.erase(it);
-    return to_place;
-}
-
-void threadMap(ThreadContext *t_context)
-{
-    int num_pairs = t_context->inputVec->size();
-    int old_value = LOAD_PROGRESS((t_context->atomic_counter)->fetch_add(1));
-    while (old_value < num_pairs)
-    {
-        K1 *key = t_context->inputVec->at(old_value).first;
-        V1 *value = t_context->inputVec->at(old_value).second;
-        t_context->client->map(key, value, t_context);
-        old_value = LOAD_PROGRESS((t_context->atomic_counter)->fetch_add(1));
-    }
-}
-
 void threadReduce(ThreadContext *t_context) {
     auto shuffleQueue = t_context->shuffleQueue;
     while (true) {
         printf("current progress: %llu\n", LOAD_PROGRESS(t_context->atomic_counter->load()));
-        pthread_mutex_lock(t_context->mutexes + QUEUE_MUTEX);
+        pthread_mutex_lock(t_context->mutexes + QUEUE_MUTEX_IND);
         if (shuffleQueue->empty()) {
-            pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX);
+            pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX_IND);
             break;
         }
         t_context->client->reduce(&(shuffleQueue->back()), t_context);
         INC_PROGRESS(t_context->atomic_counter, shuffleQueue->back().size());
         t_context->shuffleQueue->pop_back();
-        pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX);
+        pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX_IND);
     }
 }
 
@@ -192,10 +205,10 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     }
 
 
-    for (int i = 0; i < multiThreadLevel; ++i)
+    /*for (int i = 0; i < multiThreadLevel; ++i)
     {
         pthread_join(threads[i], NULL);
-    }
+    }*/
 
 
 
@@ -212,9 +225,8 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     printf("total: %llu\n", LOAD_TOTAL(atomic_counter->load()));
     printf("final progress: %llu\n", LOAD_PROGRESS(atomic_counter->load()));
 
-
-    //TODO change
-    return atomic_counter;
+    JobHandleReal *ret = new JobHandleReal{threads, threadTracker, false, mutexes};
+    return ret;
     //=========
 }
 
@@ -264,7 +276,7 @@ void *entry_point(void *placeholder)
 
 
     //TODO change
-    return t_context->atomic_counter;
+    return 0;
     //===========
 }
 
@@ -274,7 +286,6 @@ void emit2(K2 *key, V2 *value, void *context)
     t_context->intermediateVec.push_back(IntermediatePair(key, value));
 }
 
-
 void emit3(K3 *key, V3 *value, void *context)
 {
     // is using second mutex here necessary?
@@ -282,10 +293,25 @@ void emit3(K3 *key, V3 *value, void *context)
     t_context->outputVec->push_back(OutputPair(key, value));
 }
 
-
+// TODO test
 void waitForJob(JobHandle job)
 {
+    JobHandleReal *realJob = static_cast<JobHandleReal*>(job);
+    int num_threads = realJob->threadTracker->num_threads;
+    pthread_t *threads = realJob->threads;
+    pthread_mutex_t* mutex = (realJob->mutexes) + WAIT_MUTEX_IND;
 
+    pthread_mutex_lock(mutex);
+    if (realJob->done) {
+        pthread_mutex_unlock(mutex);
+        return;
+    }
+    for (int i = 0; i < num_threads; ++i)
+    {
+        pthread_join(threads[i], NULL);
+    }
+    realJob->done = true;
+    pthread_mutex_unlock(mutex);
 }
 
 
@@ -316,7 +342,7 @@ int main(int argc, char **argv)
     // starting the program
     JobHandle job = startMapReduceJob(client, input_vec, output_vec, 2);
 
-
+    waitForJob(job);
 }
 
 
