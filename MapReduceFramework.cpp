@@ -13,7 +13,6 @@
 // =================== MACROS ======================
 #define SET_STAGE(atomic_counter, stage) atomic_counter->store((uint64_t)stage << 62)
 #define INC_PROGRESS(atomic_counter, to_add) atomic_counter->fetch_add(to_add)
-#define RESET_PROGRESS(atomic_counter) atomic_counter->store((uint64_t)new_total << 31)
 #define INC_TOTAL(atomic_counter, to_add) atomic_counter->fetch_add((uint64_t)to_add << 31)
 
 #define LOAD_STAGE(atomic_counter) atomic_counter->load() >> 62
@@ -115,6 +114,9 @@ void threadMap(ThreadContext *t_context)
 void initShuffle(ThreadContext *t_context, std::set<IntermediatePair, IntPairComparator> &shuffleSet)
 {
     auto atomic_counter = t_context->atomic_counter;
+    atomic_counter->store(0);
+    SET_STAGE(atomic_counter, SHUFFLE_STAGE);
+    usleep(100000);
     const ThreadContext *all_contexts = t_context->threadTracker->all_contexts;
     int num_threads = t_context->threadTracker->num_threads;
     for (int i = 0; i < num_threads; ++i) {
@@ -137,25 +139,26 @@ void threadShuffle(ThreadContext *t_context, std::set<IntermediatePair, IntPairC
     while (!shuffleSet.empty()) {
         IntermediatePair toPlace = popFromSet(shuffleSet);
 
-        IntermediateVec *keyVec = new IntermediateVec();
+        IntermediateVec keyVec;
         for (int i = 0; i < num_threads; ++i) {
             IntermediateVec &curVec = all_contexts[i].intermediateVec;
             while (!(curVec.empty()) && equalPairs(toPlace, curVec.back()))
             {
-                keyVec->push_back(curVec.back());
+                keyVec.push_back(curVec.back());
                 curVec.pop_back();
                 INC_PROGRESS(atomic_counter, 1);
+                //usleep(100000);
             }
             if (!curVec.empty()) {shuffleSet.insert(curVec.back());}
         }
-        shuffleQueue->push_back(*keyVec);
+        shuffleQueue->push_back(keyVec);
     }
 }
 
 void threadReduce(ThreadContext *t_context) {
     auto shuffleQueue = t_context->shuffleQueue;
     while (true) {
-        printf("current progress: %llu\n", SHIFT_PROGRESS(t_context->atomic_counter->load()));
+        //printf("current progress: %lu\n", SHIFT_PROGRESS(t_context->atomic_counter->load()));
         CHECK(pthread_mutex_lock(t_context->mutexes + QUEUE_MUTEX_IND), MUTEX_LOCK_ERR);
         if (shuffleQueue->empty()) {
             CHECK(pthread_mutex_unlock(t_context->mutexes + QUEUE_MUTEX_IND), MUTEX_UNLOCK_ERR);
@@ -188,8 +191,8 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
     Barrier *barrier = new Barrier(multiThreadLevel);
     auto shuffledQueue = new std::vector<IntermediateVec>();
 
-    INC_TOTAL(atomic_counter, inputVec.size());
     SET_STAGE(atomic_counter, MAP_STAGE);
+    INC_TOTAL(atomic_counter, inputVec.size());
     for (int i = 0; i < multiThreadLevel; ++i) // todo creat constructor ?(destructor)?
     {
         t_contexts[i].tid = i;
@@ -217,24 +220,14 @@ JobHandle startMapReduceJob(const MapReduceClient &client,
 
 
 
-    std::cout << "[" ;
-    for (const auto &item : outputVec)
-    {
-        std::cout << " (" << ((const KChar*)(item.first))->c <<
-                  " : "
-                  << ((const VCount*)(item.second))->count <<
-                  ")," << std::endl;
-    }
-    std::cout << "]" << std::endl;
 
-    printf("total: %llu\n", LOAD_TOTAL(atomic_counter));
-    printf("final progress: %llu\n", SHIFT_PROGRESS(atomic_counter->load()));
+    //printf("total: %lu\n", LOAD_TOTAL(atomic_counter));
+    //printf("final progress: %lu\n", SHIFT_PROGRESS(atomic_counter->load()));
 
     JobHandleReal *ret = new JobHandleReal{threads, threadTracker, false, mutexes};
     return ret;
     //=========
 }
-
 
 // (Note: not technically a library function, but placed here for intuitive reasons)
 void *entry_point(void *placeholder)
@@ -257,14 +250,8 @@ void *entry_point(void *placeholder)
 
     // ================ SHUFFLE STAGE ================
     if (t_context->tid == 0) {
-        // set up Shuffle stage
-        t_context->atomic_counter->store(0);
-        SET_STAGE(t_context->atomic_counter, SHUFFLE_STAGE); //TODO check forum about when exactly to change stage
-
         std::set<IntermediatePair, IntPairComparator> shuffleSet;
-
         initShuffle(t_context, shuffleSet);
-
         threadShuffle(t_context, shuffleSet);
 
         // Set up for Reduce stage
@@ -326,19 +313,39 @@ void getJobState(JobHandle job, JobState *state)
     auto atomic_counter = realJob->threadTracker->all_contexts->atomic_counter;
 
     state->stage = static_cast<stage_t>(LOAD_STAGE(atomic_counter));
+    if (state->stage == UNDEFINED_STAGE) {
+        std::cout << "reached undefined stage if" << std::endl;
+        state->percentage = 0;
+        return;
+    }
 
     double progress = SHIFT_PROGRESS(atomic_counter->load());
     double total = LOAD_TOTAL(atomic_counter); // use doubles to make sure 32 bit ints don't overflow
-    state->percentage = (float)(progress / total) * 100;
+    if (total == 0) { // at stage transition
+        state->percentage = 0;
+        return;
+    }
+    state->percentage = std::min(1.0f, (float)(progress / total)) * 100;
 }
 
 void closeJobHandle(JobHandle job)
 {
+    // Make sure job has ended first
+    waitForJob(job);
 
+    JobHandleReal *realJob = static_cast<JobHandleReal*>(job);
+    delete realJob->threadTracker->all_contexts->atomic_counter;
+    delete[] realJob->threadTracker->all_contexts->mutexes;
+    delete realJob->threadTracker->all_contexts->shuffleQueue;
+    delete realJob->threadTracker->all_contexts->barrier;
+    delete[] realJob->threadTracker->all_contexts; // will this work?
+    delete realJob->threadTracker;
+    delete[] realJob->threads;
+    delete realJob;
 }
 
 
-int main(int argc, char **argv)
+/*int main(int argc, char **argv)
 {
     CounterClient client;
     InputVec input_vec;
@@ -354,52 +361,16 @@ int main(int argc, char **argv)
     JobHandle job = startMapReduceJob(client, input_vec, output_vec, 2);
 
     waitForJob(job);
-}
 
+    std::cout << "[" ;
+    for (const auto &item : output_vec)
+    {
+        std::cout << " (" << ((const KChar*)(item.first))->c <<
+        " : "
+        << ((const VCount*)(item.second))->count <<
+        ")," << std::endl;
+    }
+    std::cout << "]" << std::endl;
 
+}*/
 
-//int main(int argc, char** argv)
-//{
-//  CounterClient client;
-//  InputVec inputVec;
-//  OutputVec outputVec;
-//  VString s1("This string is full of characters");
-//  VString s2("Multithreading is awesome");
-//  VString s3("race conditions are bad");
-//  inputVec.push_back({nullptr, &s1});
-//  inputVec.push_back({nullptr, &s2});
-//  inputVec.push_back({nullptr, &s3});
-//  JobState state;
-//  JobState last_state={UNDEFINED_STAGE,0};
-//  JobHandle job = startMapReduceJob(client, inputVec, outputVec, 4);
-//  //getJobState(job, &state);
-//
-//  while (state.stage != REDUCE_STAGE || state.percentage != 100.0)
-//  {
-//    if (last_state.stage != state.stage || last_state.percentage != state.percentage){
-//      printf("stage %d, %f%% \n",
-//             state.stage, state.percentage);
-//    }
-//    usleep(100000);
-//    last_state = state;
-//    getJobState(job, &state);
-//  }
-//  printf("stage %d, %f%% \n",
-//         state.stage, state.percentage);
-//  printf("Done!\n");
-//
-//  closeJobHandle(job);
-//
-//  for (OutputPair& pair: outputVec) {
-//    char c = ((const KChar*)pair.first)->c;
-//    int count = ((const VCount*)pair.second)->count;
-//    printf("The character %c appeared %d time%s\n",
-//           c, count, count > 1 ? "s" : "");
-//    delete pair.first;
-//    delete pair.second;
-//  }
-//
-//  return 0;
-//}
-//
-//
