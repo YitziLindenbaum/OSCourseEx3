@@ -114,9 +114,9 @@ void threadMap(ThreadContext *t_context)
 void initShuffle(ThreadContext *t_context, std::set<IntermediatePair, IntPairComparator> &shuffleSet)
 {
     auto atomic_counter = t_context->atomic_counter;
-    atomic_counter->store(0);
+
     SET_STAGE(atomic_counter, SHUFFLE_STAGE);
-    usleep(100000);
+    //usleep(100000);
     const ThreadContext *all_contexts = t_context->threadTracker->all_contexts;
     int num_threads = t_context->threadTracker->num_threads;
     for (int i = 0; i < num_threads; ++i) {
@@ -256,8 +256,7 @@ void *entry_point(void *placeholder)
 
         // Set up for Reduce stage
         uint32_t reduceTotal = LOAD_TOTAL(t_context->atomic_counter);
-        t_context->atomic_counter->store(0);
-        SET_STAGE(t_context->atomic_counter, REDUCE_STAGE); //TODO check forum about when exactly to change stage
+        SET_STAGE(t_context->atomic_counter, REDUCE_STAGE);
         INC_TOTAL(t_context->atomic_counter, reduceTotal);
     }
 
@@ -312,20 +311,26 @@ void getJobState(JobHandle job, JobState *state)
     JobHandleReal *realJob = static_cast<JobHandleReal*>(job);
     auto atomic_counter = realJob->threadTracker->all_contexts->atomic_counter;
 
-    state->stage = static_cast<stage_t>(LOAD_STAGE(atomic_counter));
-    if (state->stage == UNDEFINED_STAGE) {
-        std::cout << "reached undefined stage if" << std::endl;
-        state->percentage = 0;
+    //state->stage = static_cast<stage_t>(LOAD_STAGE(atomic_counter));
+    stage_t stage = static_cast<stage_t>(LOAD_STAGE(atomic_counter));
+    if (stage == UNDEFINED_STAGE) {
+        JobState newState = {UNDEFINED_STAGE, 0};
+        *state = newState;
         return;
     }
 
     double progress = SHIFT_PROGRESS(atomic_counter->load());
     double total = LOAD_TOTAL(atomic_counter); // use doubles to make sure 32 bit ints don't overflow
+    //std::cout << "total: " << total << std::endl << "progress: " << progress << std::endl;
+    //std::cout.flush();
     if (total == 0) { // at stage transition
-        state->percentage = 0;
+        JobState newState = {stage, 0};
+        *state = newState;
         return;
     }
-    state->percentage = std::min(1.0f, (float)(progress / total)) * 100;
+    float percentage = std::min(1.0f, (float)(progress / total)) * 100;
+    JobState newState = {stage, percentage};
+    *state = newState;
 }
 
 void closeJobHandle(JobHandle job)

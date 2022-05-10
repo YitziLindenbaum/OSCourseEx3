@@ -66,6 +66,7 @@ public:
 };
 
 
+/*
 int main(int argc, char** argv)
 {
 	CounterClient client;
@@ -110,3 +111,4 @@ int main(int argc, char** argv)
 	return 0;
 }
 
+*/
