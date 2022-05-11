@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.15)
 # NOTE: You can't have both ThreadSanitizer and AddressSanitizer enabled at the same time.
 
 # Uncomment the following to enable ThreadSanitizer.
@@ -19,7 +19,7 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 add_library(MapReduceFramework
-        MapReduceClient.h
+        MapReduceClient.h SampleClient.cpp
         MapReduceFramework.cpp MapReduceFramework.h
         Barrier.h Barrier.cpp
         # ------------- Add your own .h/.cpp files here -------------------

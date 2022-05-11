@@ -29,9 +29,10 @@
                         exit(1); \
                         }
 
-#define NUM_MUTEXES 2
+#define NUM_MUTEXES 3
 #define QUEUE_MUTEX_IND 0
 #define WAIT_MUTEX_IND 1
+#define STATE_MUTEX_IND 2
 
 // ================= DECLARATIONS ====================
 struct ThreadTracker typedef ThreadTracker;
