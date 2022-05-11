@@ -29,11 +29,16 @@ void* foo(void* arg)
 
 int main(int argc, char** argv)
 {
-    std::int64_t num = (1 << 31);
+    std::atomic<uint64_t> atomic(4611686024869838857);
+    std::cout << atomic.load() << std::endl;
+    std::uint64_t num2 = ((atomic.load() >> 62));
+    std::uint64_t num1 = ((atomic.load() >> 31) & 0x7FFFFFFF);
+    std::cout << num1 << std::endl;
+    std::cout << num2 << std::endl;
     //std::atomic<std::uint64_t> atomic_counter(0);
     //atomic_counter.store(1 << 31);
 
-    std::cout << num << std::endl;
+    //std::cout << num << std::endl;
 
     return 0;
 }
