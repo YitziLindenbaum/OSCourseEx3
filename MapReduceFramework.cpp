@@ -10,7 +10,6 @@
 #include <iostream>
 #include <algorithm>
 #include <semaphore.h>
-#include <map>
 #include <set>
 #include "SampleClient.cpp"
 #include "Barrier.h"
@@ -19,8 +18,6 @@
 #define SET_STAGE(atomic_counter, stage) atomic_counter->store((uint64_t)stage << 62)
 #define INC_PROGRESS(atomic_counter, to_add) atomic_counter->fetch_add(to_add)
 #define INC_TOTAL(atomic_counter, to_add) atomic_counter->fetch_add((uint64_t)to_add << 31)
-
-#define LOAD_TOTAL(atomic_counter) ((atomic_counter->load() >> 31) & 0x7FFFFFFF)
 
 #define LEFTMOST_2_BITS(num) (num >> 62)
 #define RIGHTMOST_31_BITS(num) (uint64_t)num & 0x7FFFFFFF

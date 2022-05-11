@@ -1,0 +1,10 @@
+chucklind,elayaharoni
+Yitzchak Lindenbaum (336082789), Elay Aharoni (315533968)
+Exercise 3
+
+FILES:
+MapReduceFramework.cpp -- implementation of MapReduceFramework library. Includes helper functions and structs as well.
+Barrier.h -- header file for Barrier object (included in assignment resources).
+Barrier.cpp -- implementation of Barrier object (included in assignment resources).
+Makefile
+README -- this file.
