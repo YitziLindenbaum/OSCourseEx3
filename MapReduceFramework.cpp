@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <semaphore.h>
 #include <set>
-#include "SampleClient.cpp"
 #include "Barrier.h"
 
 // =================== MACROS ======================
